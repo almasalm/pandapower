@@ -175,6 +175,8 @@ def write_voltage_dependend_load_results(net, p, q, b):
 
     if voltage_depend_loads:
         # constant impedance and constant current
+        # FIXME: voltage_depend_loads not forced to false will write nan to res_load here.
+        #  vm_l has nan which is multiplied and added into res_load.p_mw
         vm_l = net["_ppc"]["bus"][lidx, 7]
         volt_depend_p = ci_p * vm_l + cz_p * vm_l ** 2
         pl = load_df["p_mw"].values * scaling * load_is * volt_depend_p
