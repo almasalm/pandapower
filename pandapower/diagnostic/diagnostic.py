@@ -140,7 +140,7 @@ class Diagnostic:
                         raise args[arg_name]
             try:
                 diag_result = diag_class.diagnostic(net, **args)
-                if diag_result is not None:
+                if diag_result:
                     self.diag_results[name] = diag_result
             except Exception as e:
                 self.diag_errors[name] = e

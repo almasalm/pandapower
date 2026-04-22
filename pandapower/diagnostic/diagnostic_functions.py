@@ -265,36 +265,65 @@ class NoExtGrid(DiagnosticFunction[pandapowerNet, bool]):
 
 class WrongVscDcConfig(DiagnosticFunction[pandapowerNet, dict[str, list[int]]]):
     """
-    Checks, if at least one external grid exists.
+    Checks, if VSCs were configured correctly, with special focus on slack config and dc control modes
     """
-    def diagnostic(self, net: pandapowerNet, **kwargs) -> dict[str, list[int]]:
+    def diagnostic(self, net: pandapowerNet, **kwargs) -> dict[str, list[int]] | None:
         results = {}
-        # already checked VSCs
-        visited_vsc = []
-        # VSCs which are connected to each other via DC lines
-        vsc_pairs = []
-        for vsc_id in net.vsc.index:
-            if vsc_id in visited_vsc:
+        ac_subnets = self.search_topology(net)
+        # Skip if there is more than two VSCs in dc subnet
+        ok = self.check_dc_subnets(net)
+        if not ok:
+            return None
+
+        from itertools import combinations
+        subnet_combi = list(combinations(ac_subnets, 2))
+        visited = set()
+        for combi in subnet_combi:
+            subnet1 = combi[0]
+            subnet2 = combi[1]
+
+            if not (subnet1["dc_vsc_pairs"].issubset(subnet2["dc_vsc_pairs"]) or
+                    subnet2["dc_vsc_pairs"].issubset(subnet1["dc_vsc_pairs"])):
                 continue
-            visited_vsc.append(vsc_id)
-            # find the connected VSC via DC line
-            vsc_id_pair = self.find_vsc(net, net.vsc.loc[vsc_id, 'bus_dc'], [])
-            if vsc_id_pair is not None:
-                vsc_id_pair = int(vsc_id_pair)
-                vsc_pairs.append([vsc_id, vsc_id_pair])
-                visited_vsc.append(vsc_id_pair)
-        problem_ids = []
-        for vsc_system in vsc_pairs:
-            if set(vsc_pairs).issubset(problem_ids):
+
+            errors = subnet1["errors"].union(subnet2["errors"])
+            errors = errors - visited
+            visited = visited.union(errors)
+            if len(errors) > 0:
+                results[(f"VSC names {net.vsc.loc[list(errors), 'name'].values.tolist()} with indices {errors} have "
+                         f"no second counterpart VSCs in the dc subnet.")] = errors
                 continue
-            # check the topology and the modes
-            res = self.check_topo(net, vsc_system)
+
+            res = self.validate(net, subnet1, subnet2)
             if not res[0]:
-                results["VSC names: " + str(net.vsc.loc[res[1], 'name'].values) + ' index: ' + str(res[1])] = res[1]
-                problem_ids.append(res[1])
+                results[res[1]] = res[2]
+
+        if not results:
+            return None
         return results
 
-    def find_vsc(self, net, start_bus: int, no_bus: list[int]) -> int | None:
+    def check_dc_subnets(self, net):
+        """Ensures that each DC subnet contains no more than two VSCs"""
+        import networkx as nx
+        # DC-Graph
+        dc_graph = nx.Graph()
+        # DC buses as nodes
+        dc_graph.add_nodes_from(net.bus_dc.index)
+        # DC lines as edges
+        for _, line in net.line_dc.iterrows():
+            if line.in_service:
+                dc_graph.add_edge(line.from_bus_dc, line.to_bus_dc)
+
+        dc_subnets = list(nx.connected_components(dc_graph))
+        for subnet in dc_subnets:
+            vscs = net.vsc[net.vsc.bus_dc.isin(subnet)]
+            if len(vscs) > 2:
+                return False
+        return True
+
+
+    def find_vsc_on_dc(self, net, start_bus: int, no_bus: list[int]) -> int:
+        """Get the second VSC in DC subnet"""
         no_bus.append(start_bus)
         # get DC lines connected to start_bus
         l = net.line_dc.loc[(net.line_dc['from_bus_dc'] == start_bus) | (net.line_dc['to_bus_dc'] == start_bus)]
@@ -303,16 +332,74 @@ class WrongVscDcConfig(DiagnosticFunction[pandapowerNet, dict[str, list[int]]]):
         # check if a VSC is connected to one of those next_buses, otherwise continue search recursively
         vscs = net.vsc.loc[net.vsc['bus_dc'].isin(next_buses)]
         if not vscs.empty:
-            return vscs.index.values[0]
+            return int(vscs.index.values[0])
         else:
             for one_next_buses in next_buses:
-                self.find_vsc(net, one_next_buses, no_bus)
+                self.find_vsc_on_dc(net, one_next_buses, no_bus)
             # if there was no VSC found yet, there is no second VSC
-            return None
+            return -1
 
-    def check_topo(self, net: pandapowerNet, vsc_id: list[int]) -> tuple[bool, list[int]]:
-        # todo detect other VSCs and check topo
-        return True, []
+    def search_topology(self, net) -> list[dict]:
+        """Identifies AC subnets and returns information about the VSCs and slack configuration within each subnet"""
+        import pandapower.topology as top
+        ac_subnets = []
+        visited = []
+        for vsc_id in net.vsc.index:
+            if vsc_id in visited:
+                continue
+
+            ac_graph = top.create_nxgraph(net)
+            subnet = list(top.connected_component(ac_graph, net.vsc.loc[vsc_id, "bus"]))
+            ext_grid_slack = not net.ext_grid[net.ext_grid.bus.isin(subnet)].empty
+            gen_slack = not net.gen[net.gen.slack & (net.gen.bus.isin(subnet))].empty
+            vscs = net.vsc.loc[net.vsc.bus.isin(subnet)]
+            vsc_indices = vscs.index.to_list()
+            pairs = set()
+            errors = set()
+            for idx in vsc_indices:
+                vsc_dc_id = self.find_vsc_on_dc(net, net.vsc.loc[idx].bus_dc, [])
+                if vsc_dc_id == -1:
+                    errors.add(idx)
+                pairs.add(tuple(sorted([idx, vsc_dc_id])))
+            ac_subnets.append({"vsc_indices": vsc_indices,
+                               "dc_vsc_pairs": pairs,
+                               "has_slack": ext_grid_slack or gen_slack,
+                               "errors": errors
+                               })
+            visited.extend(vsc_indices)
+        return ac_subnets
+
+
+    def validate(self, net: pandapowerNet, subnet1, subnet2) -> tuple[bool, str, list]:
+        """
+        Validates the network topology by checking whether VSCs have been configured correctly,
+        with specific focus on the slack configuration and dc control modes
+        """
+        common_dc_vsc_pairs = list(subnet1["dc_vsc_pairs"].intersection(subnet2["dc_vsc_pairs"]))
+
+        if subnet1["has_slack"] and subnet2["has_slack"]:
+            errors = []
+            for pair in common_dc_vsc_pairs:
+                count = net.vsc.loc[list(pair), "control_mode_dc"].eq("p_mw").sum()
+                if count != 1:
+                    errors.append(pair)
+            if len(errors) > 0:
+                names = [tuple(net.vsc.loc[list(x), "name"].values.tolist()) for x in errors]
+                return False, (f"VSC names {names} with indices {errors} should have exactly one "
+                               f"P-Setpoint for control_mode_dc."), errors
+        elif subnet1["has_slack"] or subnet2["has_slack"]:
+            vm_pairs_count = 0
+            for pair in common_dc_vsc_pairs:
+                count = net.vsc.loc[list(pair), "control_mode_dc"].eq("vm_pu").sum()
+                if count == 2:
+                    vm_pairs_count += 1
+            if vm_pairs_count != 1:
+                names = [tuple(net.vsc.loc[list(x), "name"].values.tolist()) for x in common_dc_vsc_pairs]
+                return (False,
+                        (f"VSC names {names} with indices {common_dc_vsc_pairs} should have exactly one pair of "
+                               f"VSCs with voltage-Setpoints for control_mode_dc, but {vm_pairs_count} was given."),
+                        common_dc_vsc_pairs)
+        return True, "fine", []
 
     def report(self, error: Exception | None, results: dict[str, list[int]]):
         # error and success checks
@@ -328,9 +415,11 @@ class WrongVscDcConfig(DiagnosticFunction[pandapowerNet, dict[str, list[int]]]):
         self.out.detailed("Checking if the VSC config is plausible for DC power flow...\n")
 
         # message body
-        m = "Missing at least one P-Setpoint for the following VSC systems: \n"
-        m += str([vsc_system for vsc_system in results])
+        m = "Wrong config for the following VSC systems: \n"
+        for vsc_system in results:
+            m += str(vsc_system) + "\n"
         self.out.detailed(m)
+
 
 
 class MultipleVoltageControllingElementsPerBus(DiagnosticFunction[pandapowerNet, dict[str, list[Any]]]):

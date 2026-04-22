@@ -13,6 +13,9 @@ from pandapower.create import create_ext_grid, create_switch
 from pandapower.toolbox.grid_modification import drop_trafos, change_std_type
 from pandapower.networks import example_multivoltage, example_simple
 from pandapower.diagnostic import Diagnostic, DiagnosticFunction
+from pandapower.create import (create_empty_network, create_bus, create_load, create_switch, create_ext_grid,
+                               create_line_from_parameters, create_bus_dc, create_vsc, create_line_dc_from_parameters
+                               )
 from pandapower.diagnostic.diagnostic_functions import (
     InvalidValues,
     NoExtGrid,
@@ -832,6 +835,196 @@ def test_runpp_errors(test_net, diag_params, diag_errors):
     net.load.p_mw *= 100
     Diagnostic().diagnose_network(net, report_style=None)
 
+
+def test_dc_vsc_p_diag_case_one_slack():
+    net = create_empty_network()
+    b1 = create_bus(net, name="AC_B1", vn_kv=380)
+    b2 = create_bus(net, name="AC_B2", vn_kv=380)
+    b3 = create_bus(net, name="AC_B3", vn_kv=380)
+    b4 = create_bus(net, name="AC_B4", vn_kv=380)
+
+    create_ext_grid(net, bus=b1, vm_pu=1, va_degree=0)
+    create_load(net, bus=b4, p_mw=100, q_mvar=0)
+
+    create_line_from_parameters(net, name="L1", from_bus=b1, to_bus=b2, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    create_line_from_parameters(net, name="L2", from_bus=b3, to_bus=b4, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    # DC part
+    dc_b1 = create_bus_dc(net, 150, 'DC_B1')
+    dc_b2 = create_bus_dc(net, 150, 'DC_B2')
+    dc_b3 = create_bus_dc(net, 150, 'DC_B3')
+    dc_b4 = create_bus_dc(net, 150, 'DC_B4')
+
+    vsc_1 = create_vsc(net, b2, dc_b1, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC1")
+    vsc_3 = create_vsc(net, b2, dc_b3, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=-40, name="VSC3")
+    vsc_2 = create_vsc(net, b3, dc_b2, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC2")
+    vsc_4 = create_vsc(net, b3, dc_b4, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC4")
+
+    create_line_dc_from_parameters(net, dc_b1, dc_b2, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+    create_line_dc_from_parameters(net, dc_b3, dc_b4, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+
+    import pandapower as pp
+    res = pp.diagnostic(net, return_result_dict=True)
+    assert 'wrong_vsc_dc_config' not in res
+
+
+def test_dc_vsc_p_diag_case_two_slacks():
+    net = create_empty_network()
+    b1 = create_bus(net, name="AC_B1", vn_kv=380)
+    b2 = create_bus(net, name="AC_B2", vn_kv=380)
+    b3 = create_bus(net, name="AC_B3", vn_kv=380)
+    b4 = create_bus(net, name="AC_B4", vn_kv=380)
+
+    create_ext_grid(net, bus=b1, vm_pu=1, va_degree=0)
+    create_ext_grid(net, bus=b3, vm_pu=1, va_degree=0)
+    create_load(net, bus=b4, p_mw=100, q_mvar=0)
+
+    create_line_from_parameters(net, name="L1", from_bus=b1, to_bus=b2, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    create_line_from_parameters(net, name="L2", from_bus=b3, to_bus=b4, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    # DC part
+    dc_b1 = create_bus_dc(net, 150, 'DC_B1')
+    dc_b2 = create_bus_dc(net, 150, 'DC_B2')
+    dc_b3 = create_bus_dc(net, 150, 'DC_B3')
+    dc_b4 = create_bus_dc(net, 150, 'DC_B4')
+
+    create_vsc(net, b2, dc_b1, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=1., name="VSC1")
+    create_vsc(net, b2, dc_b3, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=-40, name="VSC3")
+    create_vsc(net, b3, dc_b2, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC2")
+    create_vsc(net, b3, dc_b4, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC4")
+
+    create_line_dc_from_parameters(net, dc_b1, dc_b2, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+    create_line_dc_from_parameters(net, dc_b3, dc_b4, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+
+    import pandapower as pp
+    res = pp.diagnostic(net, return_result_dict=True)
+    assert 'wrong_vsc_dc_config' not in res
+
+def test_dc_vsc_p_diag_case_wrong_vm():
+    net = create_empty_network()
+    b1 = create_bus(net, name="AC_B1", vn_kv=380)
+    b2 = create_bus(net, name="AC_B2", vn_kv=380)
+    b3 = create_bus(net, name="AC_B3", vn_kv=380)
+    b4 = create_bus(net, name="AC_B4", vn_kv=380)
+
+    create_ext_grid(net, bus=b1, vm_pu=1, va_degree=0)
+    create_load(net, bus=b4, p_mw=100, q_mvar=0)
+
+    create_line_from_parameters(net, name="L1", from_bus=b1, to_bus=b2, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    create_line_from_parameters(net, name="L2", from_bus=b3, to_bus=b4, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    # DC part
+    dc_b1 = create_bus_dc(net, 150, 'DC_B1')
+    dc_b2 = create_bus_dc(net, 150, 'DC_B2')
+    dc_b3 = create_bus_dc(net, 150, 'DC_B3')
+    dc_b4 = create_bus_dc(net, 150, 'DC_B4')
+
+    create_vsc(net, b2, dc_b1, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC1")
+    create_vsc(net, b2, dc_b3, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=-40, name="VSC3")
+    create_vsc(net, b3, dc_b2, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=1., name="VSC2")
+    create_vsc(net, b3, dc_b4, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=1., name="VSC4")
+
+    create_line_dc_from_parameters(net, dc_b1, dc_b2, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+    create_line_dc_from_parameters(net, dc_b3, dc_b4, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+
+    import pandapower as pp
+    res = pp.diagnostic(net, return_result_dict=True)
+    assert 'wrong_vsc_dc_config' in res
+    key = list(res['wrong_vsc_dc_config'].keys())[0]
+    assert (0, 2) in res['wrong_vsc_dc_config'][key]
+    assert (1, 3) in res['wrong_vsc_dc_config'][key]
+
+
+def test_dc_vsc_p_diag_case_two_slacks_wrong_p():
+    net = create_empty_network()
+    b1 = create_bus(net, name="AC_B1", vn_kv=380)
+    b2 = create_bus(net, name="AC_B2", vn_kv=380)
+    b3 = create_bus(net, name="AC_B3", vn_kv=380)
+    b4 = create_bus(net, name="AC_B4", vn_kv=380)
+
+    create_ext_grid(net, bus=b1, vm_pu=1, va_degree=0)
+    create_ext_grid(net, bus=b3, vm_pu=1, va_degree=0)
+    create_load(net, bus=b4, p_mw=100, q_mvar=0)
+
+    create_line_from_parameters(net, name="L1", from_bus=b1, to_bus=b2, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    create_line_from_parameters(net, name="L2", from_bus=b3, to_bus=b4, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    # DC part
+    dc_b1 = create_bus_dc(net, 150, 'DC_B1')
+    dc_b2 = create_bus_dc(net, 150, 'DC_B2')
+    dc_b3 = create_bus_dc(net, 150, 'DC_B3')
+    dc_b4 = create_bus_dc(net, 150, 'DC_B4')
+
+    create_vsc(net, b2, dc_b1, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=1., name="VSC1")
+    create_vsc(net, b2, dc_b3, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=-40, name="VSC3")
+    create_vsc(net, b3, dc_b2, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC2")
+    create_vsc(net, b3, dc_b4, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC4")
+
+    create_line_dc_from_parameters(net, dc_b1, dc_b2, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+    create_line_dc_from_parameters(net, dc_b3, dc_b4, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+
+    import pandapower as pp
+    res = pp.diagnostic(net, return_result_dict=True)
+    assert 'wrong_vsc_dc_config' in res
+    key = list(res['wrong_vsc_dc_config'].keys())[0]
+    assert res['wrong_vsc_dc_config'][key] == [(1, 3)] # ('VSC3', 'VSC4')
+
+def test_dc_vsc_p_diag_case_no_vsc_pair():
+    net = create_empty_network()
+    b1 = create_bus(net, name="AC_B1", vn_kv=380)
+    b2 = create_bus(net, name="AC_B2", vn_kv=380)
+    b3 = create_bus(net, name="AC_B3", vn_kv=380)
+    b4 = create_bus(net, name="AC_B4", vn_kv=380)
+
+    create_ext_grid(net, bus=b1, vm_pu=1, va_degree=0)
+    create_load(net, bus=b4, p_mw=100, q_mvar=0)
+
+    create_line_from_parameters(net, name="L1", from_bus=b1, to_bus=b2, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    create_line_from_parameters(net, name="L2", from_bus=b3, to_bus=b4, length_km=30, r_ohm_per_km=0.049,
+                                x_ohm_per_km=0.136, g_us_per_km=0, c_nf_per_km=142, max_i_ka=1.5)
+    # DC part
+    dc_b1 = create_bus_dc(net, 150, 'DC_B1')
+    dc_b2 = create_bus_dc(net, 150, 'DC_B2')
+    dc_b3 = create_bus_dc(net, 150, 'DC_B3')
+    dc_b4 = create_bus_dc(net, 150, 'DC_B4')
+
+    create_vsc(net, b2, dc_b1, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC1")
+    create_vsc(net, b2, dc_b3, 0, 15, r_dc_ohm=0.5, control_mode_ac='vm_pu', control_value_ac=1,
+                       control_mode_dc="p_mw", control_value_dc=-40, name="VSC3")
+    create_vsc(net, b3, dc_b4, 0, 15, r_dc_ohm=0.5, control_mode_ac='slack', control_value_ac=1,
+                       control_mode_dc="vm_pu", control_value_dc=1., name="VSC4")
+
+    create_line_dc_from_parameters(net, dc_b1, dc_b2, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+    create_line_dc_from_parameters(net, dc_b3, dc_b4, length_km=100, r_ohm_per_km=0.0212, max_i_ka=0.963)
+
+    import pandapower as pp
+    res = pp.diagnostic(net, return_result_dict=True)
+
+    assert 'wrong_vsc_dc_config' in res
+    key = list(res['wrong_vsc_dc_config'].keys())[0]
+    assert res['wrong_vsc_dc_config'][key] == {0} # 'VSC1' has no counterpart
 
 if __name__ == "__main__":
     pytest.main([__file__, "-xs"])
